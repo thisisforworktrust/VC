@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Discord‑Style P2P Voice Channel</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, Arial, sans-serif;
+      background: #0f1220;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+    .app {
+      background: #171a2e;
+      padding: 20px;
+      border-radius: 12px;
+      width: 300px;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0,0,0,.45);
+    }
+    .status { opacity: .8; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <h2>Voice Channel</h2>
+    <div class="status" id="status">Connecting…</div>
+  </div>
+
+  <audio id="remoteAudio" autoplay></audio>
+
+  <script>
+    /* ==========================
+       DISCORD‑STYLE MODEL
+       ==========================
+       • ONE FIXED SERVER PEER ID
+       • CLIENTS AUTO‑CONNECT
+       • NO TARGET IDS
+       • AUDIO ONLY
+    */
+
+    const SERVER_ID = "shooymcord-voice"; // same for everyone
+
+    const statusEl = document.getElementById("status");
+    const remoteAudio = document.getElementById("remoteAudio");
+
+    let localStream;
+    let peers = {};
+
+    // random client id (like Discord client)
+    const peer = new Peer();
+
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(stream => {
+        localStream = stream;
+        statusEl.textContent = "Mic ready";
+      })
+      .catch(() => statusEl.textContent = "Mic denied");
+
+    peer.on("open", id => {
+      // try to connect to server peer
+      const conn = peer.connect(SERVER_ID);
+
+      conn.on("open", () => {
+        conn.send({ type: "join", id });
+        statusEl.textContent = "Joined voice channel";
+      });
+    });
+
+    // server peer behavior
+    if (location.hash === "#host") {
+      peer.on("open", () => statusEl.textContent = "Voice server online");
+
+      peer.on("connection", conn => {
+        conn.on("data", data => {
+          if (data.type === "join") {
+            const call = peer.call(data.id, localStream);
+            register(call);
+          }
+        });
+      });
+    }
+
+    peer.on("call", call => {
+      call.answer(localStream);
+      register(call);
+    });
+
+    function register(call) {
+      peers[call.peer] = call;
+      call.on("stream", s => remoteAudio.srcObject = s);
+      call.on("close", () => delete peers[call.peer]);
+    }
+  </script>
+</body>
+</html>
