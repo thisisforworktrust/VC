@@ -3,100 +3,85 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Discord‑Style P2P Voice Channel</title>
+  <title>Discord‑Style P2P Voice (FIXED)</title>
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
-    body {
-      margin: 0;
-      font-family: system-ui, Arial, sans-serif;
-      background: #0f1220;
-      color: #fff;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
-    }
-    .app {
-      background: #171a2e;
-      padding: 20px;
-      border-radius: 12px;
-      width: 300px;
-      text-align: center;
-      box-shadow: 0 20px 40px rgba(0,0,0,.45);
-    }
-    .status { opacity: .8; font-size: 14px; }
+    body{margin:0;font-family:system-ui;background:#0f1220;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh}
+    .app{background:#171a2e;padding:20px;border-radius:12px;width:320px;text-align:center;box-shadow:0 20px 40px rgba(0,0,0,.45)}
+    .status{opacity:.85;font-size:14px}
   </style>
 </head>
 <body>
-  <div class="app">
-    <h2>Voice Channel</h2>
-    <div class="status" id="status">Connecting…</div>
-  </div>
+<div class="app">
+  <h2>Voice Channel</h2>
+  <div class="status" id="status">Starting…</div>
+</div>
+<audio id="remote" autoplay></audio>
 
-  <audio id="remoteAudio" autoplay></audio>
+<script>
+/* ===============================
+   CORRECT DISCORD‑STYLE MODEL
+   ===============================
+   • ONE FIXED VOICE SERVER ID
+   • FIRST TAB BECOMES HOST
+   • OTHERS AUTO JOIN
+   • AUDIO ONLY
+*/
 
-  <script>
-    /* ==========================
-       DISCORD‑STYLE MODEL
-       ==========================
-       • ONE FIXED SERVER PEER ID
-       • CLIENTS AUTO‑CONNECT
-       • NO TARGET IDS
-       • AUDIO ONLY
-    */
+const SERVER_ID = "shooymcord-voice";
+const statusEl = document.getElementById("status");
+const remote = document.getElementById("remote");
 
-    const SERVER_ID = "shooymcord-voice"; // same for everyone
+let localStream;
+let peers = {};
 
-    const statusEl = document.getElementById("status");
-    const remoteAudio = document.getElementById("remoteAudio");
+navigator.mediaDevices.getUserMedia({ audio:true })
+.then(s=>localStream=s)
+.catch(()=>statusEl.textContent="Mic denied");
 
-    let localStream;
-    let peers = {};
+// try to become server first
+let peer = new Peer(SERVER_ID);
 
-    // random client id (like Discord client)
-    const peer = new Peer();
+peer.on("open",()=>{
+  statusEl.textContent="Hosting voice channel";
+});
 
-    navigator.mediaDevices.getUserMedia({ audio: true })
-      .then(stream => {
-        localStream = stream;
-        statusEl.textContent = "Mic ready";
-      })
-      .catch(() => statusEl.textContent = "Mic denied");
+peer.on("error",err=>{
+  if(err.type==="unavailable-id"){
+    // server already exists → become client
+    peer = new Peer();
 
-    peer.on("open", id => {
-      // try to connect to server peer
+    peer.on("open",id=>{
+      statusEl.textContent="Joined voice channel";
       const conn = peer.connect(SERVER_ID);
 
-      conn.on("open", () => {
-        conn.send({ type: "join", id });
-        statusEl.textContent = "Joined voice channel";
+      conn.on("open",()=>{
+        conn.send({join:id});
       });
     });
+  }
+});
 
-    // server peer behavior
-    if (location.hash === "#host") {
-      peer.on("open", () => statusEl.textContent = "Voice server online");
-
-      peer.on("connection", conn => {
-        conn.on("data", data => {
-          if (data.type === "join") {
-            const call = peer.call(data.id, localStream);
-            register(call);
-          }
-        });
-      });
-    }
-
-    peer.on("call", call => {
-      call.answer(localStream);
+// server receives joins
+peer.on("connection",conn=>{
+  conn.on("data",data=>{
+    if(data.join){
+      const call = peer.call(data.join, localStream);
       register(call);
-    });
-
-    function register(call) {
-      peers[call.peer] = call;
-      call.on("stream", s => remoteAudio.srcObject = s);
-      call.on("close", () => delete peers[call.peer]);
     }
-  </script>
+  });
+});
+
+peer.on("call",call=>{
+  call.answer(localStream);
+  register(call);
+});
+
+function register(call){
+  peers[call.peer]=call;
+  call.on("stream",s=>remote.srcObject=s);
+  call.on("close",()=>delete peers[call.peer]);
+}
+</script>
 </body>
 </html>
