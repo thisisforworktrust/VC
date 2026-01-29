@@ -3,12 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Discord-Style P2P (Full Mesh)</title>
+  <title>Discord-Style Voice (Bi-Directional)</title>
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <style>
+    /* CSS for dark mode UI */
     body {
       margin: 0;
-      font-family: 'Segoe UI', sans-serif;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       background: #0f1220;
       color: #fff;
       display: flex;
@@ -17,182 +18,278 @@
       justify-content: center;
       height: 100vh;
     }
-    .app {
-      background: #171a2e;
+    .app-container {
+      background: #1e2133;
       padding: 30px;
       border-radius: 16px;
-      width: 320px;
+      width: 350px;
       text-align: center;
-      box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+      box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+      border: 1px solid #2f344d;
     }
+    h2 { margin-top: 0; color: #fff; }
+    
+    /* Connection Status Badge */
+    .badge {
+      display: inline-block;
+      padding: 5px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+      margin-bottom: 15px;
+      background: #333;
+    }
+    .badge.host { background: #43b581; color: #fff; }
+    .badge.client { background: #faa61a; color: #fff; }
+
+    /* Controls */
+    .controls { margin-top: 20px; display: flex; gap: 10px; justify-content: center; }
     .btn {
-      background: #5865F2;
-      color: white;
-      border: none;
-      padding: 12px 24px;
+      padding: 12px 20px;
       border-radius: 8px;
-      font-size: 16px;
+      border: none;
+      font-weight: bold;
       cursor: pointer;
-      width: 100%;
-      margin-bottom: 10px;
+      color: white;
+      transition: 0.2s;
+      flex: 1;
     }
-    .btn:disabled { opacity: 0.5; cursor: default; }
-    .status { color: #a0a5bd; font-size: 13px; margin-bottom: 15px; }
-    .user-list { text-align: left; margin-top: 15px; border-top: 1px solid #2f344d; padding-top: 10px; }
-    .user-item { padding: 5px 0; font-size: 14px; color: #43b581; }
+    .btn-primary { background: #5865F2; }
+    .btn-primary:hover { background: #4752c4; }
+    .btn-danger { background: #ed4245; }
+    
+    /* User List */
+    .user-list {
+      margin-top: 20px;
+      background: #151824;
+      border-radius: 8px;
+      padding: 10px;
+      text-align: left;
+      min-height: 100px;
+    }
+    .user-item {
+      padding: 8px;
+      border-bottom: 1px solid #2f344d;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+    }
+    .user-item:last-child { border-bottom: none; }
+    .dot {
+      height: 10px; width: 10px;
+      background: #43b581;
+      border-radius: 50%;
+      margin-right: 10px;
+      box-shadow: 0 0 5px #43b581;
+    }
   </style>
 </head>
 <body>
 
-<div class="app">
+<div class="app-container">
   <h2>Voice Channel</h2>
-  <div class="status" id="status">Ready to connect...</div>
-  <button id="btn-join" class="btn">Join Voice</button>
-  
-  <div class="user-list">
-    <div style="color: #bbb; font-size:12px; margin-bottom:5px;">USERS IN CHANNEL:</div>
-    <div id="users-container"></div>
+  <div id="status-badge" class="badge">Offline</div>
+  <div id="status-text" style="color:#a0a5bd; font-size:13px;">Waiting to join...</div>
+
+  <div class="user-list" id="user-list">
+    <div style="padding:10px; color:#555; text-align:center">Users will appear here</div>
+  </div>
+
+  <div class="controls">
+    <button id="btn-join" class="btn btn-primary">Join Channel</button>
+    <button id="btn-mute" class="btn btn-danger" disabled>Mute</button>
   </div>
 </div>
 
 <div id="audio-grid"></div>
 
 <script>
-  const SERVER_ID = "shooym-mesh-v2"; // Unique Room ID
-  const statusEl = document.getElementById("status");
-  const btnJoin = document.getElementById("btn-join");
-  const usersContainer = document.getElementById("users-container");
+  /* =========================================
+     LOGIC: FULL MESH (Everyone Hears Everyone)
+     ========================================= */
   
-  let localStream;
-  let peer;
-  let connectedPeers = []; // List of IDs (for Host to manage)
+  const ROOM_ID = "my-voice-room-123"; // Must be unique if you want private rooms
+  
+  let localStream = null;
+  let peer = null;
+  let existingCalls = [];
 
-  btnJoin.addEventListener('click', async () => {
+  const btnJoin = document.getElementById("btn-join");
+  const btnMute = document.getElementById("btn-mute");
+  const statusBadge = document.getElementById("status-badge");
+  const statusText = document.getElementById("status-text");
+  const userList = document.getElementById("user-list");
+
+  // --- 1. JOIN BUTTON CLICK ---
+  btnJoin.addEventListener("click", async () => {
     btnJoin.disabled = true;
-    btnJoin.innerText = "Connecting...";
+    statusText.innerText = "Requesting Microphone...";
     
-    // 1. Get Microphone
     try {
-      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      statusEl.innerText = "Mic active. Finding room...";
+      // Get Microphone Audio
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true }
+      });
+
+      // Enable Mute Button
+      btnMute.disabled = false;
+      btnMute.innerText = "Mute Mic";
+      
+      // Initialize PeerJS
+      statusText.innerText = "Connecting to network...";
       initPeer();
-    } catch (e) {
-      statusEl.innerText = "Mic blocked. Check settings.";
+
+    } catch (err) {
+      statusText.innerText = "Error: Mic blocked or not found.";
+      console.error(err);
+      btnJoin.disabled = false;
     }
   });
 
+  // --- 2. PEER INITIALIZATION ---
   function initPeer() {
-    // Try to become the HOST first
-    peer = new Peer(SERVER_ID);
+    // Try to be the Host (Server)
+    peer = new Peer(ROOM_ID);
 
     peer.on("open", (id) => {
-      // Success: I am the Host
-      statusEl.innerHTML = "You are the <b>HOST</b>";
-      addUserItem("You (Host)");
+      // If we opened successfully with ROOM_ID, we are the HOST
+      setUIState("HOST", id);
       setupHostLogic();
     });
 
     peer.on("error", (err) => {
       if (err.type === "unavailable-id") {
-        // Failed: Host exists, so I am a Client
-        peer = new Peer(); // Get random ID
+        // If ROOM_ID is taken, we are a CLIENT
+        peer = new Peer(); // Generate random ID
         peer.on("open", (id) => {
-            statusEl.innerText = "Joined as Client";
-            addUserItem("You (Client)");
-            connectToHost(); // Handshake to get list of other users
+          setUIState("CLIENT", id);
+          connectToHost();
         });
       } else {
-        console.error(err);
+        console.error("Peer Error:", err);
       }
     });
   }
 
-  // --- HOST LOGIC ---
+  // --- 3. HOST LOGIC (The first person) ---
   function setupHostLogic() {
-    // Answer any calls (Host needs to hear ppl too)
-    peer.on("call", call => {
+    // A. Handle Incoming Calls (Audio)
+    peer.on("call", (call) => {
+      // 1. Answer the call with OUR stream (So they hear us)
       call.answer(localStream);
-      handleMediaCall(call);
+      // 2. Listen to their stream (So we hear them)
+      handleIncomingAudio(call);
     });
 
-    // Handle Data connections (Management)
+    // B. Handle Data Connections (Coordination)
     peer.on("connection", (conn) => {
       conn.on("open", () => {
-        // 1. Register the new guy
-        connectedPeers.push(conn.peer);
+        // Send the new user the list of current peers to connect to
+        const otherPeers = existingCalls.map(c => c.peer);
+        conn.send({ type: 'peers', ids: otherPeers });
         
-        // 2. Send him the list of OTHER users so he can call them
-        // We filter out his own ID
-        const peersToCall = connectedPeers.filter(id => id !== conn.peer);
-        conn.send({ type: 'user-list', ids: peersToCall });
+        // Add to our list
+        existingCalls.push(conn);
       });
-
+      
       conn.on("close", () => {
-        connectedPeers = connectedPeers.filter(id => id !== conn.peer);
+        existingCalls = existingCalls.filter(c => c.peer !== conn.peer);
       });
     });
   }
 
-  // --- CLIENT LOGIC ---
+  // --- 4. CLIENT LOGIC (Everyone else) ---
   function connectToHost() {
-    // 1. Connect Data (to get the user list)
-    const conn = peer.connect(SERVER_ID);
+    // A. Connect to Host to get the User List
+    const conn = peer.connect(ROOM_ID);
     
     conn.on("open", () => {
-      // 2. Call the Host immediately (so Host hears me)
-      const hostCall = peer.call(SERVER_ID, localStream);
-      handleMediaCall(hostCall);
+      // B. Call the Host (Audio)
+      const hostCall = peer.call(ROOM_ID, localStream);
+      handleIncomingAudio(hostCall);
     });
 
     conn.on("data", (data) => {
-      if (data.type === "user-list") {
-        // 3. The Host sent us a list of existing users. CALL THEM ALL.
-        console.log("Calling existing users:", data.ids);
+      if (data.type === 'peers') {
+        // C. Call everyone else in the room (Mesh Network)
         data.ids.forEach(id => {
           const call = peer.call(id, localStream);
-          handleMediaCall(call);
+          handleIncomingAudio(call);
         });
       }
     });
 
-    // Handle incoming calls (from future joiners)
+    // D. Allow others to call us (if we joined early and someone joins later)
     peer.on("call", (call) => {
       call.answer(localStream);
-      handleMediaCall(call);
+      handleIncomingAudio(call);
     });
   }
 
-  // --- UNIVERSAL MEDIA HANDLER ---
-  function handleMediaCall(call) {
-    const existingAudio = document.getElementById(`audio-${call.peer}`);
-    if (existingAudio) return; // Already connected
+  // --- 5. AUDIO HANDLING (Bi-Directional) ---
+  function handleIncomingAudio(call) {
+    // Prevent duplicate audio for the same user
+    if (document.getElementById(`audio-${call.peer}`)) return;
 
-    // Wait for stream
     call.on("stream", (remoteStream) => {
       if (document.getElementById(`audio-${call.peer}`)) return;
 
-      // Add Audio Tag
+      // Create Audio Element
       const audio = document.createElement("audio");
       audio.id = `audio-${call.peer}`;
       audio.srcObject = remoteStream;
-      audio.autoplay = true;
-      document.body.appendChild(audio); // Add to DOM
-      
-      // Add Visual UI
-      addUserItem(`User ${call.peer.substr(0,4)}`);
+      audio.autoplay = true; // IMPORTANT
+      audio.playsInline = true;
+      document.getElementById("audio-grid").appendChild(audio);
+
+      // Update UI
+      addUserToUI(call.peer);
     });
 
-    call.on("close", () => {
-      document.getElementById(`audio-${call.peer}`)?.remove();
-      document.getElementById(`ui-${call.peer}`)?.remove();
-    });
+    call.on("close", () => removeUserFromUI(call.peer));
+    call.on("error", () => removeUserFromUI(call.peer));
   }
 
-  function addUserItem(name) {
+  // --- 6. MUTE BUTTON LOGIC ---
+  btnMute.addEventListener("click", () => {
+    const track = localStream.getAudioTracks()[0];
+    if (track.enabled) {
+      track.enabled = false;
+      btnMute.innerText = "Unmute";
+      btnMute.classList.remove("btn-danger");
+      btnMute.style.background = "#555";
+    } else {
+      track.enabled = true;
+      btnMute.innerText = "Mute Mic";
+      btnMute.classList.add("btn-danger");
+      btnMute.style.background = "#ed4245";
+    }
+  });
+
+  // --- UI HELPERS ---
+  function setUIState(role, id) {
+    statusBadge.innerText = role;
+    statusBadge.className = "badge " + role.toLowerCase();
+    statusText.innerText = `Connected as ${id}`;
+    userList.innerHTML = ""; // Clear list
+    addUserToUI("You");
+    btnJoin.style.display = "none";
+  }
+
+  function addUserToUI(id) {
+    if (document.getElementById(`ui-${id}`)) return;
     const div = document.createElement("div");
+    div.id = `ui-${id}`;
     div.className = "user-item";
-    div.innerText = "🔊 " + name;
-    usersContainer.appendChild(div);
+    div.innerHTML = `<div class="dot"></div> User ${id.substr(0,5)}`;
+    userList.appendChild(div);
+  }
+
+  function removeUserFromUI(id) {
+    const el = document.getElementById(`ui-${id}`);
+    const aud = document.getElementById(`audio-${id}`);
+    if (el) el.remove();
+    if (aud) aud.remove();
   }
 </script>
 </body>
