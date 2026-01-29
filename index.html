@@ -3,85 +3,186 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Discord‑Style P2P Voice (FIXED)</title>
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <title>Discord-Style P2P Voice</title>
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <style>
-    body{margin:0;font-family:system-ui;background:#0f1220;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh}
-    .app{background:#171a2e;padding:20px;border-radius:12px;width:320px;text-align:center;box-shadow:0 20px 40px rgba(0,0,0,.45)}
-    .status{opacity:.85;font-size:14px}
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #0f1220;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+    .app {
+      background: #171a2e;
+      padding: 30px;
+      border-radius: 16px;
+      width: 320px;
+      text-align: center;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+      border: 1px solid #2f344d;
+    }
+    h2 { margin-top: 0; font-weight: 600; letter-spacing: 0.5px; }
+    .status {
+      margin-top: 15px;
+      padding: 10px;
+      background: #1f2338;
+      border-radius: 8px;
+      font-size: 13px;
+      color: #a0a5bd;
+      min-height: 20px;
+    }
+    .btn {
+      background: #5865F2;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.2s;
+      margin-bottom: 15px;
+      width: 100%;
+    }
+    .btn:hover { background: #4752c4; }
+    .btn:disabled { background: #2f344d; cursor: not-allowed; opacity: 0.7; }
+    
+    /* Hidden container for audio elements */
+    #audio-grid { display: none; }
   </style>
 </head>
 <body>
+
 <div class="app">
   <h2>Voice Channel</h2>
-  <div class="status" id="status">Starting…</div>
+  <button id="btn-join" class="btn">Click to Connect</button>
+  <div class="status" id="status">Ready to connect...</div>
 </div>
-<audio id="remote" autoplay></audio>
+
+<div id="audio-grid"></div>
 
 <script>
-/* ===============================
-   CORRECT DISCORD‑STYLE MODEL
-   ===============================
-   • ONE FIXED VOICE SERVER ID
-   • FIRST TAB BECOMES HOST
-   • OTHERS AUTO JOIN
-   • AUDIO ONLY
-*/
+  /* CONFIGURATION */
+  // Use a unique ID. If you share this link, everyone needs the SAME ID.
+  const SERVER_ID = "shooymcord-voice-v1"; 
 
-const SERVER_ID = "shooymcord-voice";
-const statusEl = document.getElementById("status");
-const remote = document.getElementById("remote");
+  const statusEl = document.getElementById("status");
+  const btnJoin = document.getElementById("btn-join");
+  const audioGrid = document.getElementById("audio-grid");
+  
+  let localStream = null;
+  let peer = null;
+  const peers = {}; // Keep track of active calls
 
-let localStream;
-let peers = {};
+  // 1. User Interaction (Required by Browsers for Audio)
+  btnJoin.addEventListener('click', async () => {
+    btnJoin.disabled = true;
+    btnJoin.innerText = "Accessing Mic...";
+    statusEl.textContent = "Requesting microphone access...";
 
-navigator.mediaDevices.getUserMedia({ audio:true })
-.then(s=>localStream=s)
-.catch(()=>statusEl.textContent="Mic denied");
-
-// try to become server first
-let peer = new Peer(SERVER_ID);
-
-peer.on("open",()=>{
-  statusEl.textContent="Hosting voice channel";
-});
-
-peer.on("error",err=>{
-  if(err.type==="unavailable-id"){
-    // server already exists → become client
-    peer = new Peer();
-
-    peer.on("open",id=>{
-      statusEl.textContent="Joined voice channel";
-      const conn = peer.connect(SERVER_ID);
-
-      conn.on("open",()=>{
-        conn.send({join:id});
+    try {
+      // 2. Get Microphone Stream FIRST
+      localStream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }, 
+        video: false 
       });
-    });
-  }
-});
+      
+      statusEl.textContent = "Microphone connected. Connecting to network...";
+      initPeer(); // Start PeerJS logic only after we have the mic
 
-// server receives joins
-peer.on("connection",conn=>{
-  conn.on("data",data=>{
-    if(data.join){
-      const call = peer.call(data.join, localStream);
-      register(call);
+    } catch (err) {
+      console.error(err);
+      statusEl.textContent = "Microphone denied. Please allow access and refresh.";
+      btnJoin.innerText = "Error";
     }
   });
-});
 
-peer.on("call",call=>{
-  call.answer(localStream);
-  register(call);
-});
+  function initPeer() {
+    // 3. Attempt to become the HOST
+    peer = new Peer(SERVER_ID);
 
-function register(call){
-  peers[call.peer]=call;
-  call.on("stream",s=>remote.srcObject=s);
-  call.on("close",()=>delete peers[call.peer]);
-}
+    // If successful, I am the Host
+    peer.on("open", (id) => {
+      statusEl.innerHTML = `<span style="color:#43b581">Hosting Channel</span><br><small>ID: ${id}</small>`;
+      btnJoin.innerText = "You are Host";
+      setupIncomingCalls();
+    });
+
+    // If error, likely "unavailable-id" (Host exists), so become CLIENT
+    peer.on("error", (err) => {
+      if (err.type === "unavailable-id") {
+        statusEl.textContent = "Host found. Joining as client...";
+        reconnectAsClient();
+      } else {
+        statusEl.textContent = "Error: " + err.type;
+        console.error(err);
+      }
+    });
+  }
+
+  function reconnectAsClient() {
+    // Destroy failed "Host" attempt
+    peer.destroy();
+
+    // Create new peer with random ID
+    peer = new Peer();
+
+    peer.on("open", (id) => {
+      statusEl.innerHTML = `<span style="color:#faa61a">Joined Channel</span><br><small>Connected to Host</small>`;
+      btnJoin.innerText = "Connected";
+      
+      // Call the Host immediately
+      const call = peer.call(SERVER_ID, localStream);
+      handleCall(call);
+    });
+  }
+
+  function setupIncomingCalls() {
+    peer.on("call", (call) => {
+      // Answer incoming call with our stream
+      call.answer(localStream);
+      handleCall(call);
+    });
+  }
+
+  function handleCall(call) {
+    // 4. Dynamic Audio Elements
+    // We need a unique audio tag for every person
+    call.on("stream", (remoteStream) => {
+      // Check if we already have an audio element for this peer
+      if (document.getElementById(`audio-${call.peer}`)) return;
+
+      const audio = document.createElement("audio");
+      audio.id = `audio-${call.peer}`; // Unique ID
+      audio.srcObject = remoteStream;
+      audio.autoplay = true;
+      audio.playsInline = true;
+      
+      // Append to DOM
+      audioGrid.appendChild(audio);
+    });
+
+    call.on("close", () => {
+      // Remove audio element when they leave
+      const audio = document.getElementById(`audio-${call.peer}`);
+      if (audio) audio.remove();
+    });
+
+    call.on("error", (err) => {
+      console.log("Call error:", err);
+      const audio = document.getElementById(`audio-${call.peer}`);
+      if (audio) audio.remove();
+    });
+  }
 </script>
 </body>
 </html>
